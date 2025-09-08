@@ -1,3 +1,9 @@
+
+import os
+from pathlib import Path
+current_dir = Path(__file__).parent
+TEACHERS_FILE = os.path.join(current_dir, "teachers.json")
+
 """
 High School Management System API
 
@@ -5,19 +11,63 @@ A super simple FastAPI application that allows students to view and sign up
 for extracurricular activities at Mergington High School.
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Response, Depends
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+import json
+import secrets
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
 import os
 from pathlib import Path
 
+
 app = FastAPI(title="Mergington High School API",
               description="API for viewing and signing up for extracurricular activities")
 
+# Allow CORS for frontend JS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Load teacher credentials from JSON
+TEACHERS_FILE = os.path.join(current_dir, "teachers.json")
+def load_teachers():
+    with open(TEACHERS_FILE, "r") as f:
+        data = json.load(f)
+    return data["teachers"]
+
+# Simple in-memory session store: token -> username
+sessions = {}
+
+# Auth dependency
+bearer_scheme = HTTPBearer()
+def require_teacher(credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme)):
+    token = credentials.credentials
+    if token not in sessions:
+        raise HTTPException(status_code=401, detail="Not authenticated as teacher")
+    return sessions[token]
+@app.post("/login")
+def login(data: dict):
+    username = data.get("username")
+    password = data.get("password")
+    teachers = load_teachers()
+    for teacher in teachers:
+        if teacher["username"] == username and teacher["password"] == password:
+            # Generate a token
+            token = secrets.token_hex(16)
+            sessions[token] = username
+            return {"token": token, "username": username}
+    raise HTTPException(status_code=401, detail="Invalid credentials")
+
+
 # Mount the static files directory
 current_dir = Path(__file__).parent
-app.mount("/static", StaticFiles(directory=os.path.join(Path(__file__).parent,
-          "static")), name="static")
+app.mount("/static", StaticFiles(directory=os.path.join(current_dir, "static")), name="static")
 
 # In-memory activity database
 activities = {
@@ -89,7 +139,7 @@ def get_activities():
 
 
 @app.post("/activities/{activity_name}/signup")
-def signup_for_activity(activity_name: str, email: str):
+def signup_for_activity(activity_name: str, email: str, teacher: str = Depends(require_teacher)):
     """Sign up a student for an activity"""
     # Validate activity exists
     if activity_name not in activities:
@@ -111,7 +161,7 @@ def signup_for_activity(activity_name: str, email: str):
 
 
 @app.delete("/activities/{activity_name}/unregister")
-def unregister_from_activity(activity_name: str, email: str):
+def unregister_from_activity(activity_name: str, email: str, teacher: str = Depends(require_teacher)):
     """Unregister a student from an activity"""
     # Validate activity exists
     if activity_name not in activities:
